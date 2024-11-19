@@ -1,0 +1,5 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Plugin>
+    <AssemblyFile>OC.RobotStudio.dll</AssemblyFile>
+    <AdditionalDirectory>C:\Program Files (x86)\ABB\RobotStudio 2024\Bin</AdditionalDirectory>
+</Plugin>
