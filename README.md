@@ -27,5 +27,5 @@ To build the plugin yourself, you need to copy the
 `ABB.Robotics.Controllers.PC.dll` to the project directory.\
 You can find the dll in `C:\Program Files (x86)\ABB\RobotStudio 2024\Bin\` by default.
 
-### Notes
-The plugin has been tested with RobotStudio Version `2024.2.1`
+> [!NOTE]
+> The plugin has been tested with RobotStudio Version `2024.2.1`
