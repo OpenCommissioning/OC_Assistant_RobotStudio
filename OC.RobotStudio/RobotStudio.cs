@@ -274,7 +274,7 @@ public class RobotStudio : PluginBase
     {
         await Task.Run(() =>
         {
-            var stopwatch = new Stopwatch();
+            var stopwatch = new StopwatchEx();
             var axisValues = new AxisValues();
             var mechanicalUnits = _abbController?.MotionSystem.MechanicalUnits;
 
