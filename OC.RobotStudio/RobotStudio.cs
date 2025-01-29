@@ -247,7 +247,7 @@ public class RobotStudio : PluginBase
     {
         await Task.Run(() =>
         {
-            var stopwatch = new Stopwatch();
+            var stopwatch = new StopwatchEx();
 
             while (!token.IsCancellationRequested)
             {
