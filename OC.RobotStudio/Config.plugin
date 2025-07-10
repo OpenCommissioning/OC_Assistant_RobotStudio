@@ -2,4 +2,6 @@
 <Plugin>
     <AssemblyFile>OC.RobotStudio.dll</AssemblyFile>
     <AdditionalDirectory>C:\Program Files (x86)\ABB\RobotStudio 2024\Bin</AdditionalDirectory>
+	<RepositoryUrl>https://github.com/OpenCommissioning/OC_Assistant_RobotStudio</RepositoryUrl>
+    <RepositoryType>github</RepositoryType>
 </Plugin>
