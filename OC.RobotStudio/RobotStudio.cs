@@ -1,5 +1,4 @@
 ﻿using System.Collections;
-using System.Diagnostics;
 using ABB.Robotics.Controllers;
 using ABB.Robotics.Controllers.Discovery;
 using ABB.Robotics.Controllers.IOSystemDomain;
@@ -167,7 +166,7 @@ public class RobotStudio : PluginBase
 
                 if (signal.IoItem?.Name is null) continue;
                 ioSignals.Add(signal.IoItem.Name, signal);
-                structure.AddVariable($"(*{signal.Index}*) {adsName}", adsType);
+                structure.AddVariable(adsName, adsType);
             }
 
             if (ioDevice?.HasSubModules == true) DevicesToStruct(structure, ioDevice.SubModules, ioSignals, isInput);
