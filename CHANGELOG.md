@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [versionize](https://github.com/versionize/versionize) for commit guidelines.
 
+<a name="1.0.3"></a>
+## [1.0.3](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.0.3) (2026-03-25)
+
+### Bug Fixes
+
+* remove index-prefix from I/O names ([8a3380c](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/commit/8a3380c7399280a31f1d067c9c36d0419d7fcc3a))
+
 <a name="1.0.2"></a>
 ## [1.0.2](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.0.2) (2025-07-10)
 
