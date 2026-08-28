@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [versionize](https://github.com/versionize/versionize) for commit guidelines.
 
+<a name="1.1.0"></a>
+## [1.1.0](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.1.0) (2026-08-28)
+
+### Features
+
+* adapt to RobotStudio 2025 ([6188b28](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/commit/6188b28ab86ac3f0790597a8e0ff686438f12984))
+
 <a name="1.0.3"></a>
 ## [1.0.3](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.0.3) (2026-03-25)
 
