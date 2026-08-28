@@ -1,12 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net8.0</TargetFramework>
+        <TargetFramework>net10.0-windows</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <Company>Spiratec AG</Company>
         <Product>OC.RobotStudio</Product>
 		<Version>1.0.2</Version>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     </PropertyGroup>
 
     <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
@@ -20,7 +24,8 @@
     </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Include="OC.Assistant.Sdk" Version="1.6.0" />
+      <PackageReference Include="OC.Assistant.Sdk" Version="1.18.6" />
+      <PackageReference Include="Microsoft.Windows.Compatibility" Version="10.0.11" />
     </ItemGroup>
 
     <ItemGroup>

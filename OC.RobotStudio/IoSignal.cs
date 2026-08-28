@@ -1,5 +1,4 @@
-﻿using System.Collections;
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using System.Xml.Serialization;
 using ABB.Robotics.Controllers.IOSystemDomain;
@@ -7,7 +6,7 @@ using OC.Assistant.Sdk;
 
 namespace OC.RobotStudio;
 
-internal class IoSignal
+internal partial class IoSignal
 {
     private const float TOLERANCE = 1.0E-9f;
     private Signal? _signal;
@@ -16,14 +15,6 @@ internal class IoSignal
     public IoItem? IoItem { get; }
     public int Index => _index;
     public int Length { get; }
-    public Signal? Signal
-    {
-        set
-        {
-            _signal = value;
-            InitializeSignal();
-        }
-    }
 
     public bool IsValid => _signal is not null;
         
@@ -45,12 +36,14 @@ internal class IoSignal
         }
 
         if (IoItem.DeviceMap is null) return;
-        var m = Regex.Match(IoItem.DeviceMap, @"(?<LOW>\d+)-(?<HIGH>\d+)");
+        var m = AddressRangeRegex().Match(IoItem.DeviceMap);
         if (m.Success)
         {
             var low = int.Parse(m.Groups["LOW"].Value);
             var high = int.Parse(m.Groups["HIGH"].Value);
             Length = high - low + 1;
+            var mod = Length % 8;
+            if (mod != 0) Length += 8 - mod;
             _index = low;
         }
         else
@@ -59,9 +52,9 @@ internal class IoSignal
             Length = 1;
         }
     }
-
-    public bool Bool => Math.Abs(_value) > 0.5f;
-    public BitArray BitArray => new(BitConverter.GetBytes((uint)_value));
+    
+    public bool ValueAsBool => Math.Abs(_value) > 0.5f;
+    public uint ValueAsUInt32Bits => BitConverter.SingleToUInt32Bits(_value);
 
     public float Value
     {
@@ -82,14 +75,16 @@ internal class IoSignal
         }
     }
 
-    private void InitializeSignal()
+    public void Map(Signal signal)
     {
-        if (_signal is null) return;
+        
+        _signal = signal;
         switch (_signal.Type)
         {
             case SignalType.AnalogOutput:
             case SignalType.DigitalOutput:
             case SignalType.GroupOutput:
+                _value = _signal.Value;
                 _signal.Changed += SignalOnChanged;
                 break;
             case SignalType.DigitalInput:
@@ -118,4 +113,7 @@ internal class IoSignal
             Logger.LogError(this, $"error: {ex.Message}");
         }
     }
+
+    [GeneratedRegex(@"(?<LOW>\d+)-(?<HIGH>\d+)")]
+    private static partial Regex AddressRangeRegex();
 }

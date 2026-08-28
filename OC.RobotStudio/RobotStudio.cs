@@ -8,7 +8,6 @@ using OC.Assistant.Sdk.Plugin;
 
 namespace OC.RobotStudio;
 
-[PluginIoType(IoType.Struct)]
 public class RobotStudio : PluginBase
 {
     [PluginParameter("Name of the controller in RobotStudio")]
@@ -161,10 +160,10 @@ public class RobotStudio : PluginBase
                     8 => TcType.Byte,
                     16 => TcType.Word,
                     32 => TcType.Dword,
-                    _ => TcType.Byte
+                    _ => TcType.Unknown
                 };
 
-                if (signal.IoItem?.Name is null) continue;
+                if (signal.IoItem?.Name is null || adsType == TcType.Unknown) continue;
                 ioSignals.Add(signal.IoItem.Name, signal);
                 structure.AddVariable(adsName, adsType);
             }
@@ -194,7 +193,7 @@ public class RobotStudio : PluginBase
             //is bool
             if (bitSize == 1)
             {
-                bitBuffer[bitOffset] = signal.Bool;
+                bitBuffer[bitOffset] = signal.ValueAsBool;
                 bitOffset += bitSize;
                 continue;
             }
@@ -202,8 +201,8 @@ public class RobotStudio : PluginBase
             //is Group- or AnalogValue (8, 16, 32 Bit)
             var mod = bitOffset % 8;
             if (mod != 0) bitOffset += 8 - mod;
-            var bits = signal.BitArray;
-            for (var i = 0; i < bitSize; i++) bitBuffer[bitOffset + i] = bits[i];
+            var bits = signal.ValueAsUInt32Bits;
+            for (var i = 0; i < bitSize; i++) bitBuffer[bitOffset + i] = ((bits >> i) & 1) != 0;
             bitOffset += bitSize;
         }
             
@@ -333,6 +332,7 @@ public class RobotStudio : PluginBase
                 {
                     Logger.LogError(this, e.InnerException?.Message ?? "");
                 }
+                CancellationRequest();
             }
 
             //Wait a sec
@@ -352,7 +352,7 @@ public class RobotStudio : PluginBase
         var controllerInfo = _virtualControllers?.FirstOrDefault(x => 
             string.Equals(x.Name, _controllerName, StringComparison.CurrentCultureIgnoreCase));
             
-        if (controllerInfo != default)
+        if (controllerInfo != null)
         {
             try
             {
@@ -408,8 +408,8 @@ public class RobotStudio : PluginBase
         var mappedSignals = 0;
         foreach (Signal signal in signals)
         {
-            if (!dictionary.TryGetValue(signal.Name, out var value)) continue;
-            value.Signal = signal;
+            if (!dictionary.TryGetValue(signal.Name, out var ioSignal)) continue;
+            ioSignal.Map(signal);
             mappedSignals++;
         }
             
