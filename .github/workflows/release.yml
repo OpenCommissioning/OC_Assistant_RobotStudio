@@ -17,7 +17,7 @@ jobs:
     - name: Setup dotnet
       uses: actions/setup-dotnet@v3
       with:
-        dotnet-version: '8.0.x' 
+        dotnet-version: '10.0.x' 
 
     - name: Install Versionize
       run: dotnet tool install --global Versionize
@@ -30,44 +30,37 @@ jobs:
     - name: Versioning
       id: versionize
       run: versionize --exit-insignificant-commits
-      continue-on-error: true
 
     - name: Get current version
-      if: steps.versionize.outcome == 'success'
       run: echo "VERSION=v$(versionize inspect)" >> $GITHUB_ENV
 
     - name: Get current changelog
-      if: steps.versionize.outcome == 'success'
       run: echo "$(versionize changelog)" > latest_changelog.md
-    
+
+    - name: Dotnet build
+      env:
+        GH_TOKEN: ${{ secrets.GH_GIST_PAT }}
+        GIST_ID: ${{ secrets.GIST_ID }}
+      run: |
+        RAW_URL=$(gh api /gists/$GIST_ID | jq -r '.files.robotStudio2025DLL.raw_url')
+        curl -L "$RAW_URL" > robotStudio-base64.txt
+        base64 -d robotStudio-base64.txt > OC.RobotStudio/ABB.Robotics.Controllers.PC.dll
+        dotnet build OC.RobotStudio --configuration release --output ./Publish
+
     - name: Push changes to GitHub
-      if: steps.versionize.outcome == 'success'
       uses: ad-m/github-push-action@master
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         branch: ${{ github.ref }}
         tags: true
 
-    - name: Dotnet build
-      if: steps.versionize.outcome == 'success'
-      env:
-        GH_TOKEN: ${{ secrets.GH_GIST_PAT }}
-        GIST_ID: ${{ secrets.GIST_ID }}
-      run: |
-        RAW_URL=$(gh api /gists/$GIST_ID | jq -r '.files.robotStudioDLL.raw_url')
-        curl -L "$RAW_URL" > robotStudio-base64.txt
-        base64 -d robotStudio-base64.txt > OC.RobotStudio/ABB.Robotics.Controllers.PC.dll
-        dotnet build OC.RobotStudio --configuration release --output ./Publish
-
     - name: Publish new release
-      if: steps.versionize.outcome == 'success'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         gh release create ${{env.VERSION}} -t "Release ${{env.VERSION}}" -F latest_changelog.md
         cd ./Publish
         mkdir OC.RobotStudio
-        mv OC.RobotStudio.dll OC.RobotStudio/
-        mv Config.plugin OC.RobotStudio/
+        find . -maxdepth 1 -mindepth 1 ! -name OC.RobotStudio ! -name "ABB.Robotics.Controllers.PC.dll" -exec mv {} OC.RobotStudio/ \;
         zip -r OC.RobotStudio_${{env.VERSION}}.zip OC.RobotStudio
         gh release upload ${{env.VERSION}} OC.RobotStudio_${{env.VERSION}}.zip
