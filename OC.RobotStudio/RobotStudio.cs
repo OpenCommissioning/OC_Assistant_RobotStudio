@@ -19,13 +19,10 @@ public class RobotStudio : PluginBase
     [PluginParameter("CycleTime in ms \ndefault: 50")]
     private readonly int _cycleTime = 50;
         
-    [PluginParameter("Path of the RobotStudio solution file", "rssln")]
-    private readonly string _solution = @"C:\Users\john.doe\Documents\RobotStudio\Solutions\RobotStation1";
-        
     private readonly Dictionary<string, IoSignal> _inputs = new();
     private readonly Dictionary<string, IoSignal> _outputs = new();
     private float[] _axisValues = [];
-    private ControllerInfo[]? _virtualControllers;
+    private ControllerInfo[] _controllers = [];
     private Controller? _abbController;
     private IEnumerable<IoDevice>? _ioDevices;
     private Task? _inputWriter;
@@ -36,14 +33,13 @@ public class RobotStudio : PluginBase
     {
         try
         {
-            var solutionFolder = Path.GetDirectoryName(_solution);
-            var eioCfg = CfgParser.FindAndConvert(solutionFolder);
-            if (eioCfg is null)
-            {
-                Logger.LogError(this, $"{(solutionFolder == "" ? "Project folder must not be empty" : $"Error reading EIO file in {solutionFolder}")}");
-                return false;
-            }
-
+            var dir = Directory.CreateDirectory(Path.Combine(AppData.Path, nameof(RobotStudio), Name ?? "unnamed"));
+            var path = Path.Combine(dir.FullName, $"{_controllerName}_EIO.cfg");
+            
+            if (!SaveEioCfg(path)) return false;
+            var eioCfg = CfgParser.ConvertToXml(path);
+            if (eioCfg is null) return false;
+            
             _ioDevices = eioCfg.GetAllDevices();
             SetInputStructure();
             SetOutputStructure();
@@ -53,20 +49,38 @@ public class RobotStudio : PluginBase
             Logger.LogError(this, e.Message);
             return false;
         }
-
+        
         return true;
+    }
+
+    private bool SaveEioCfg(string path)
+    {
+        try
+        {
+            _controllers = GetControllers();
+            
+            var controllerInfo = _controllers.FirstOrDefault(x => 
+                string.Equals(x.Name, _controllerName, StringComparison.CurrentCultureIgnoreCase));
+
+            if (controllerInfo is null)
+            {
+                Logger.LogWarning(this, $"Controller '{_controllerName}' not found");
+                return false;
+            }
+            
+            using var controller = Controller.Connect(controllerInfo.SystemId, ConnectionType.Standalone);
+            controller.Configuration.ExternalIO.Save(path);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(this, e.Message);
+            return false;
+        }
     }
 
     protected override bool OnStart()
     {
-        _virtualControllers = GetControllers(CancellationToken);
-            
-        if (_virtualControllers.Length == 0)
-        {
-            Logger.LogWarning(this, $"Connecting to robot '{_controllerName}' aborted");
-            return false;
-        }
-
         if (!Connect())
         {
             return false;
@@ -310,37 +324,22 @@ public class RobotStudio : PluginBase
     /// <summary>
     /// Scan RobotStudio and get controllers
     /// </summary>
-    private ControllerInfo[] GetControllers(CancellationToken token)
+    private ControllerInfo[] GetControllers()
     {
-        Logger.LogInfo(this, $"Waiting for connection to robot '{_controllerName}'...");
         var controllers = Array.Empty<ControllerInfo>();
-
-        //waiting for RobotStudio
-        while (controllers.Length == 0 && !token.IsCancellationRequested)
+        
+        try
         {
-            try
-            {
-                var scanner = new NetworkScanner();
-                scanner.Scan();
-                controllers = scanner.GetControllers(NetworkScannerSearchCriterias.Virtual);
-                break;
-            }
-            catch(Exception e)
-            {
-                Logger.LogError(this, e.Message);
-                if (e.InnerException?.Message is not null)
-                {
-                    Logger.LogError(this, e.InnerException?.Message ?? "");
-                }
-                CancellationRequest();
-            }
-
-            //Wait a sec
-            Thread.Sleep(2000);
-
-            controllers = [];
+            var scanner = new NetworkScanner();
+            scanner.Scan();
+            controllers = scanner.GetControllers(NetworkScannerSearchCriterias.Virtual);
         }
-
+        catch(Exception e)
+        {
+            Logger.LogError(this, e.Message);
+            CancellationRequest();
+        }
+            
         return controllers;
     }
 
@@ -349,7 +348,13 @@ public class RobotStudio : PluginBase
     /// </summary>
     private bool Connect()
     {
-        var controllerInfo = _virtualControllers?.FirstOrDefault(x => 
+        if (_controllers.Length == 0)
+        {
+            Logger.LogWarning(this, $"No controllers found. Connecting to robot '{_controllerName}' aborted");
+            return false;
+        }
+        
+        var controllerInfo = _controllers.FirstOrDefault(x => 
             string.Equals(x.Name, _controllerName, StringComparison.CurrentCultureIgnoreCase));
             
         if (controllerInfo != null)
@@ -393,7 +398,6 @@ public class RobotStudio : PluginBase
         }
             
         _abbController = null;
-        _virtualControllers = null;
         Logger.LogInfo(this, $"Robot '{_controllerName}' disconnected");
     }
         
