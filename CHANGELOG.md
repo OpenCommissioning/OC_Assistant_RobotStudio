@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [versionize](https://github.com/versionize/versionize) for commit guidelines.
 
+<a name="1.2.0"></a>
+## [1.2.0](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.2.0) (2026-08-31)
+
+### Features
+
+* load the EIO file from the controller instead of the file search ([d7a9d0b](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/commit/d7a9d0ba647aa3fc9da704832f2c175bd4c2a4fa))
+
 <a name="1.1.0"></a>
 ## [1.1.0](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.1.0) (2026-08-28)
 
