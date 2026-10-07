@@ -28,6 +28,9 @@ public class RobotStudio : PluginBase
     private Task? _inputWriter;
     private Task? _axisReader;
     private Interpolator[] _smoothing = [];
+    private readonly List<Unit> _outputUnits = [];
+    private int _outputImageCount;
+    private const int OUTPUT_IMAGE_TIMEOUT_CYCLES = 10;
 
     protected override bool OnSave()
     {
@@ -289,6 +292,9 @@ public class RobotStudio : PluginBase
             var stopwatch = new StopwatchEx();
             var axisValues = new AxisValues();
             var mechanicalUnits = _abbController?.MotionSystem.MechanicalUnits;
+            var logCounter = 0;
+            var imagesPerSecond = 0;
+            var cyclesWithoutImage = 0;
 
             while (!token.IsCancellationRequested)
             {
@@ -309,6 +315,33 @@ public class RobotStudio : PluginBase
                         {
                             if (index < _axisValues.Length) _axisValues[index] = axisValues.Axis[i];
                         }
+                    }
+
+                    var images = Interlocked.Exchange(ref _outputImageCount, 0);
+                    imagesPerSecond += images;
+                    cyclesWithoutImage = images > 0 ? 0 : cyclesWithoutImage + 1;
+
+                    if (_outputUnits.Count > 0 && cyclesWithoutImage >= OUTPUT_IMAGE_TIMEOUT_CYCLES)
+                    {
+                        cyclesWithoutImage = 0;
+                        Logger.LogWarning(this, $"No output image for {OUTPUT_IMAGE_TIMEOUT_CYCLES} cycles, resubscribing units");
+                        ResubscribeOutputUnits();
+                    }
+                    else
+                    {
+                        foreach (var unit in _outputUnits)
+                        {
+                            unit.UnsubscribeSignalChange(OnUnitSignalChanged);
+                            unit.SubscribeSignalChange(OnUnitSignalChanged, EventPriority.High);
+                        }
+                    }
+
+                    var readMs = stopwatch.Elapsed.TotalMilliseconds;
+                    if (++logCounter >= 1000 / Math.Max(_cycleTime, 1))
+                    {
+                        logCounter = 0;
+                        Logger.LogInfo(this, $"Read cycle {readMs:0.0} ms, setting {_cycleTime} ms, {imagesPerSecond} output images/s", true);
+                        imagesPerSecond = 0;
                     }
                 }
                 catch (Exception e)
@@ -368,6 +401,7 @@ public class RobotStudio : PluginBase
                 var mappedInputs = MapSignals(_abbController, IOFilterTypes.Input, _inputs);
                 var mappedOutputs = MapSignals(_abbController, IOFilterTypes.Output, _outputs);
                 Logger.LogInfo(this, $"Mapped {mappedInputs} inputs and {mappedOutputs} outputs");
+                SubscribeOutputUnits();
                     
             }
             catch (Exception e)
@@ -391,6 +425,20 @@ public class RobotStudio : PluginBase
     /// </summary>
     private void Disconnect()
     {
+        foreach (var unit in _outputUnits)
+        {
+            try
+            {
+                unit.UnsubscribeSignalChange(OnUnitSignalChanged);
+            }
+            catch (Exception e)
+            {
+                Logger.LogError(this, e.Message);
+            }
+        }
+
+        _outputUnits.Clear();
+
         if (_abbController is not null && _abbController.Connected)
         {
             _abbController.Logoff();
@@ -418,5 +466,72 @@ public class RobotStudio : PluginBase
         }
             
         return mappedSignals;
+    }
+
+    private void SubscribeOutputUnits()
+    {
+        if (_abbController is null) return;
+
+        var unitNames = _outputs.Values
+            .Select(signal => signal.UnitName)
+            .Where(name => !string.IsNullOrEmpty(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var unitName in unitNames)
+        {
+            try
+            {
+                var unit = _abbController.IOSystem.GetUnit(unitName);
+                unit.SubscribeSignalChange(OnUnitSignalChanged, EventPriority.High);
+                _outputUnits.Add(unit);
+                Logger.LogInfo(this, $"Subscribed output image for unit '{unitName}'");
+            }
+            catch (Exception e)
+            {
+                Logger.LogError(this, $"Could not subscribe unit '{unitName}': {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drops the current unit objects and subscribes fresh ones from the controller.
+    /// </summary>
+    private void ResubscribeOutputUnits()
+    {
+        foreach (var unit in _outputUnits)
+        {
+            try
+            {
+                unit.UnsubscribeSignalChange(OnUnitSignalChanged);
+                unit.Dispose();
+            }
+            catch (Exception e)
+            {
+                Logger.LogError(this, e.Message);
+            }
+        }
+
+        _outputUnits.Clear();
+        SubscribeOutputUnits();
+    }
+
+    private void OnUnitSignalChanged(object? sender, UnitSignalChangedEventArgs e)
+    {
+        try
+        {
+            if (sender is not Unit unit || e.OutputBits is null) return;
+
+            Interlocked.Increment(ref _outputImageCount);
+
+            foreach (var signal in _outputs.Values)
+            {
+                if (!string.Equals(signal.UnitName, unit.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                signal.ApplyOutputImage(e.OutputBits);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(this, $"<{nameof(OnUnitSignalChanged)}> {ex.Message}");
+        }
     }
 }

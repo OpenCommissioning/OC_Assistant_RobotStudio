@@ -1,6 +1,7 @@
 ﻿using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using System.Xml.Serialization;
+using ABB.Robotics.Controllers;
 using ABB.Robotics.Controllers.IOSystemDomain;
 using OC.Assistant.Sdk;
 
@@ -15,6 +16,7 @@ internal partial class IoSignal
     public IoItem? IoItem { get; }
     public int Index => _index;
     public int Length { get; }
+    public string? UnitName { get; private set; }
 
     public bool IsValid => _signal is not null;
         
@@ -54,7 +56,9 @@ internal partial class IoSignal
     }
     
     public bool ValueAsBool => Math.Abs(_value) > 0.5f;
-    public uint ValueAsUInt32Bits => BitConverter.SingleToUInt32Bits(_value);
+    public uint ValueAsUInt32Bits => _signal?.Type is SignalType.GroupOutput or SignalType.GroupInput or SignalType.AnalogOutput
+        ? (uint)Math.Round(Math.Max(_value, 0f))
+        : BitConverter.SingleToUInt32Bits(_value);
 
     public float Value
     {
@@ -75,17 +79,47 @@ internal partial class IoSignal
         }
     }
 
+    /// <summary>
+    /// Applies one unit output image. Does not write back to the robot.
+    /// Bits whose mask is clear are left unchanged.
+    /// </summary>
+    public void ApplyOutputImage(IOUnitBits[] bits)
+    {
+        if (Length <= 0) return;
+
+        var value = (uint)Math.Round(Math.Max(_value, 0f));
+        var applied = false;
+
+        for (var i = 0; i < Length && i < 32; i++)
+        {
+            var map = Index + i;
+            var byteIndex = map / 8;
+            var bitIndex = map % 8;
+            if ((uint)byteIndex >= (uint)bits.Length) return;
+
+            var mask = bits[byteIndex].Mask;
+            if (((mask >> bitIndex) & 1) == 0) continue;
+
+            applied = true;
+            var dataBit = ((bits[byteIndex].Data >> bitIndex) & 1) != 0;
+            if (dataBit) value |= 1u << i;
+            else value &= ~(1u << i);
+        }
+
+        if (applied) _value = value;
+    }
+
     public void Map(Signal signal)
     {
         
         _signal = signal;
+        UnitName = _signal.Unit;
         switch (_signal.Type)
         {
             case SignalType.AnalogOutput:
             case SignalType.DigitalOutput:
             case SignalType.GroupOutput:
                 _value = _signal.Value;
-                _signal.Changed += SignalOnChanged;
                 break;
             case SignalType.DigitalInput:
             case SignalType.GroupInput:
