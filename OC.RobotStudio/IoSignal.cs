@@ -83,7 +83,7 @@ internal partial class IoSignal
     /// Applies one unit output image. Does not write back to the robot.
     /// Bits whose mask is clear are left unchanged.
     /// </summary>
-    public void ApplyOutputImage(IOUnitBits[] bits)
+    public void ApplyOutputImage(byte[] data, byte[] mask)
     {
         if (Length <= 0) return;
 
@@ -95,13 +95,13 @@ internal partial class IoSignal
             var map = Index + i;
             var byteIndex = map / 8;
             var bitIndex = map % 8;
-            if ((uint)byteIndex >= (uint)bits.Length) return;
+            if ((uint)byteIndex >= (uint)data.Length || (uint)byteIndex >= (uint)mask.Length) return;
 
-            var mask = bits[byteIndex].Mask;
-            if (((mask >> bitIndex) & 1) == 0) continue;
+            var maskByte = mask[byteIndex];
+            if (((maskByte >> bitIndex) & 1) == 0) continue;
 
             applied = true;
-            var dataBit = ((bits[byteIndex].Data >> bitIndex) & 1) != 0;
+            var dataBit = ((data[byteIndex] >> bitIndex) & 1) != 0;
             if (dataBit) value |= 1u << i;
             else value &= ~(1u << i);
         }
@@ -124,7 +124,7 @@ internal partial class IoSignal
             case SignalType.DigitalInput:
             case SignalType.GroupInput:
             case SignalType.AnalogInput:
-                _signal.Changed += SignalOnChanged;
+                //_signal.Changed += SignalOnChanged;
                 _signal.InputAsPhysical = true;
                 _signal.Value = 0f;
                 break;
