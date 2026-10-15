@@ -38,15 +38,23 @@ internal partial class IoSignal
         }
 
         if (IoItem.DeviceMap is null) return;
-        var m = AddressRangeRegex().Match(IoItem.DeviceMap);
-        if (m.Success)
+        var ranges = AddressRangeRegex().Matches(IoItem.DeviceMap);
+        if (ranges.Count > 0)
         {
-            var low = int.Parse(m.Groups["LOW"].Value);
-            var high = int.Parse(m.Groups["HIGH"].Value);
-            Length = high - low + 1;
-            var mod = Length % 8;
-            if (mod != 0) Length += 8 - mod;
-            _index = low;
+            var length = 0;
+            var index = int.MaxValue;
+            foreach (Match range in ranges)
+            {
+                var low = int.Parse(range.Groups["LOW"].Value);
+                var high = int.Parse(range.Groups["HIGH"].Value);
+                length += high - low + 1;
+                if (low < index) index = low;
+            }
+
+            var mod = length % 8;
+            if (mod != 0) length += 8 - mod;
+            Length = length;
+            _index = index;
         }
         else
         {

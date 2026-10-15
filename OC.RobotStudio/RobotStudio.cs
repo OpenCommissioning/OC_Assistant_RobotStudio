@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Reflection;
+using System.Xml.Linq;
 using ABB.Robotics.Controllers;
 using ABB.Robotics.Controllers.Discovery;
 using ABB.Robotics.Controllers.IOSystemDomain;
@@ -30,6 +31,8 @@ public class RobotStudio : PluginBase
     private Task? _axisReader;
     private Interpolator[] _smoothing = [];
     private readonly List<Unit> _outputUnits = [];
+    private readonly List<IoSignal> _safetyInputs = [];
+    private readonly List<IoSignal> _safetyOutputs = [];
     private static readonly PropertyInfo UnitInternalProperty =
         typeof(Unit).GetProperty("InternalUnit", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new MissingMemberException(nameof(Unit), "InternalUnit");
@@ -56,7 +59,8 @@ public class RobotStudio : PluginBase
             if (!SaveEioCfg(path)) return false;
             var eioCfg = CfgParser.ConvertToXml(path);
             if (eioCfg is null) return false;
-            
+
+            LoadSafetySignals();
             _ioDevices = eioCfg.GetAllDevices();
             SetInputStructure();
             SetOutputStructure();
@@ -158,6 +162,7 @@ public class RobotStudio : PluginBase
     {
         _inputs.Clear();
         DevicesToStruct(InputStructure, _ioDevices, _inputs, true);
+        AddSafetyInputs();
     }
 
     private void SetOutputStructure()
@@ -165,6 +170,7 @@ public class RobotStudio : PluginBase
         _outputs.Clear();
         OutputStructure.AddVariable("Axis", TcType.Real, _axisNo);
         DevicesToStruct(OutputStructure, _ioDevices, _outputs, false);
+        AddSafetyOutputs();
         _axisValues = new float[_axisNo];
     }
 
@@ -477,6 +483,119 @@ public class RobotStudio : PluginBase
         }
             
         return mappedSignals;
+    }
+
+    private void LoadSafetySignals()
+    {
+        _safetyInputs.Clear();
+        _safetyOutputs.Clear();
+        var path = FindSafetyCfg();
+        if (path is null)
+        {
+            Logger.LogInfo(this, "No safety I/O configuration found");
+            return;
+        }
+
+        var text = File.ReadAllText(path).Replace("\\\r\n", " ").Replace("\\\n", " ");
+        foreach (var rawLine in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            var signalType = QuotedValue(line, "-SignalType ");
+            if (signalType is not ("DO" or "DI" or "GI")) continue;
+            if (signalType is "DI" or "GI" &&
+                !line.Contains("-Category \"ProfiSafe\"", StringComparison.Ordinal)) continue;
+
+            var name = QuotedValue(line, "-Name ");
+            var device = QuotedValue(line, "-Device ");
+            var deviceMap = QuotedValue(line, "-DeviceMap ");
+            if (name is null || device is null || deviceMap is null) continue;
+
+            var item = new XElement("Item",
+                new XAttribute("Name", name),
+                new XAttribute("SignalType", signalType),
+                new XAttribute("Device", device),
+                new XAttribute("DeviceMap", deviceMap));
+            var signal = new IoSignal(item);
+            if (signalType == "DO") _safetyOutputs.Add(signal);
+            else _safetyInputs.Add(signal);
+        }
+
+        Logger.LogInfo(this, $"Found {_safetyOutputs.Count} safety outputs in '{path}'");
+        Logger.LogInfo(this, $"Found {_safetyInputs.Count} safety inputs in '{path}'");
+        Logger.LogInfo(this, "Safety outputs: " + string.Join(", ", _safetyOutputs.Select(signal => signal.IoItem?.Name)), true);
+        Logger.LogInfo(this, "Safety inputs: " + string.Join(", ", _safetyInputs.Select(signal => signal.IoItem?.Name)), true);
+    }
+
+    private static string? QuotedValue(string line, string key)
+    {
+        var keyIndex = line.IndexOf(key, StringComparison.Ordinal);
+        if (keyIndex < 0) return null;
+
+        var start = line.IndexOf('"', keyIndex + key.Length);
+        if (start < 0) return null;
+
+        var end = line.IndexOf('"', start + 1);
+        if (end < 0) return null;
+
+        return line[(start + 1)..end];
+    }
+
+    private string? FindSafetyCfg()
+    {
+        var controllerInfo = _controllers.FirstOrDefault(x =>
+            string.Equals(x.Name, _controllerName, StringComparison.CurrentCultureIgnoreCase));
+        DirectoryInfo?[] directories = [controllerInfo?.BaseDirectory, controllerInfo?.BaseDirectory?.Parent];
+
+        foreach (var directory in directories)
+        {
+            if (directory is null || !directory.Exists) continue;
+            var path = Path.Combine(directory.FullName, "INTERNAL", "OPTIONS", "SC", "sc_eio.cfg");
+            if (File.Exists(path)) return path;
+        }
+
+        return null;
+    }
+
+    private void AddSafetyInputs()
+    {
+        var added = 0;
+        foreach (var signal in _safetyInputs.OrderBy(item => item.Index))
+        {
+            var name = signal.IoItem?.Name;
+            var device = signal.IoItem?.Device;
+            var adsType = signal.Length switch
+            {
+                1 => TcType.Bit,
+                8 => TcType.Byte,
+                16 => TcType.Word,
+                32 => TcType.Dword,
+                _ => TcType.Unknown
+            };
+            if (name is null || device is null || adsType == TcType.Unknown || _inputs.ContainsKey(name)) continue;
+
+            _inputs.Add(name, signal);
+            InputStructure.AddVariable($"{device}_{name}", adsType);
+            added++;
+        }
+
+        if (added > 0) Logger.LogInfo(this, $"Added {added} safety inputs");
+    }
+
+    private void AddSafetyOutputs()
+    {
+        var added = 0;
+        foreach (var signal in _safetyOutputs.OrderBy(item => item.Index))
+        {
+            var name = signal.IoItem?.Name;
+            var device = signal.IoItem?.Device;
+            if (name is null || device is null || signal.Length != 1 || _outputs.ContainsKey(name)) continue;
+
+            _outputs.Add(name, signal);
+            OutputStructure.AddVariable($"{device}_{name}", TcType.Bit);
+            added++;
+        }
+
+        if (added > 0) Logger.LogInfo(this, $"Added {added} safety outputs");
     }
 
     private void LoadOutputUnits()
