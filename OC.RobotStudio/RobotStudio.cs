@@ -501,7 +501,7 @@ public class RobotStudio : PluginBase
         {
             var line = rawLine.Trim();
             var signalType = QuotedValue(line, "-SignalType ");
-            if (signalType is not ("DO" or "DI" or "GI")) continue;
+            if (signalType is not ("DO" or "GO" or "DI" or "GI")) continue;
             if (signalType is "DI" or "GI" &&
                 !line.Contains("-Category \"ProfiSafe\"", StringComparison.Ordinal)) continue;
 
@@ -516,7 +516,7 @@ public class RobotStudio : PluginBase
                 new XAttribute("Device", device),
                 new XAttribute("DeviceMap", deviceMap));
             var signal = new IoSignal(item);
-            if (signalType == "DO") _safetyOutputs.Add(signal);
+            if (signalType is "DO" or "GO") _safetyOutputs.Add(signal);
             else _safetyInputs.Add(signal);
         }
 
@@ -588,10 +588,18 @@ public class RobotStudio : PluginBase
         {
             var name = signal.IoItem?.Name;
             var device = signal.IoItem?.Device;
-            if (name is null || device is null || signal.Length != 1 || _outputs.ContainsKey(name)) continue;
+            var adsType = signal.Length switch
+            {
+                1 => TcType.Bit,
+                8 => TcType.Byte,
+                16 => TcType.Word,
+                32 => TcType.Dword,
+                _ => TcType.Unknown
+            };
+            if (name is null || device is null || adsType == TcType.Unknown || _outputs.ContainsKey(name)) continue;
 
             _outputs.Add(name, signal);
-            OutputStructure.AddVariable($"{device}_{name}", TcType.Bit);
+            OutputStructure.AddVariable($"{device}_{name}", adsType);
             added++;
         }
 
