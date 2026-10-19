@@ -1,4 +1,6 @@
 ﻿using System.Collections;
+using System.Reflection;
+using System.Xml.Linq;
 using ABB.Robotics.Controllers;
 using ABB.Robotics.Controllers.Discovery;
 using ABB.Robotics.Controllers.IOSystemDomain;
@@ -28,6 +30,24 @@ public class RobotStudio : PluginBase
     private Task? _inputWriter;
     private Task? _axisReader;
     private Interpolator[] _smoothing = [];
+    private readonly List<Unit> _outputUnits = [];
+    private readonly List<IoSignal> _safetyInputs = [];
+    private readonly List<IoSignal> _safetyOutputs = [];
+    private static readonly PropertyInfo UnitInternalProperty =
+        typeof(Unit).GetProperty("InternalUnit", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingMemberException(nameof(Unit), "InternalUnit");
+    private static readonly MethodInfo GetAdapterMethod =
+        UnitInternalProperty.PropertyType.GetMethod("GetAdapter", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingMemberException(UnitInternalProperty.PropertyType.FullName, "GetAdapter");
+    private static readonly MethodInfo ReadOutputDataMethod =
+        GetAdapterMethod.ReturnType.GetMethod("ReadOutputData", BindingFlags.Instance | BindingFlags.Public)
+        ?? throw new MissingMemberException(GetAdapterMethod.ReturnType.FullName, "ReadOutputData");
+    private static readonly FieldInfo OutputDataField =
+        ReadOutputDataMethod.ReturnType.GetGenericArguments()[0].GetField("data")
+        ?? throw new MissingFieldException(ReadOutputDataMethod.ReturnType.GetGenericArguments()[0].FullName, "data");
+    private static readonly FieldInfo OutputMaskField =
+        ReadOutputDataMethod.ReturnType.GetGenericArguments()[0].GetField("mask")
+        ?? throw new MissingFieldException(ReadOutputDataMethod.ReturnType.GetGenericArguments()[0].FullName, "mask");
 
     protected override bool OnSave()
     {
@@ -39,7 +59,8 @@ public class RobotStudio : PluginBase
             if (!SaveEioCfg(path)) return false;
             var eioCfg = CfgParser.ConvertToXml(path);
             if (eioCfg is null) return false;
-            
+
+            LoadSafetySignals();
             _ioDevices = eioCfg.GetAllDevices();
             SetInputStructure();
             SetOutputStructure();
@@ -141,6 +162,7 @@ public class RobotStudio : PluginBase
     {
         _inputs.Clear();
         DevicesToStruct(InputStructure, _ioDevices, _inputs, true);
+        AddSafetyInputs();
     }
 
     private void SetOutputStructure()
@@ -148,6 +170,7 @@ public class RobotStudio : PluginBase
         _outputs.Clear();
         OutputStructure.AddVariable("Axis", TcType.Real, _axisNo);
         DevicesToStruct(OutputStructure, _ioDevices, _outputs, false);
+        AddSafetyOutputs();
         _axisValues = new float[_axisNo];
     }
 
@@ -289,6 +312,9 @@ public class RobotStudio : PluginBase
             var stopwatch = new StopwatchEx();
             var axisValues = new AxisValues();
             var mechanicalUnits = _abbController?.MotionSystem.MechanicalUnits;
+            var logCounter = 0;
+            var imagesPerSecond = 0;
+            string? imageError = null;
 
             while (!token.IsCancellationRequested)
             {
@@ -309,6 +335,42 @@ public class RobotStudio : PluginBase
                         {
                             if (index < _axisValues.Length) _axisValues[index] = axisValues.Axis[i];
                         }
+                    }
+
+                    var images = 0;
+                    foreach (var unit in _outputUnits)
+                    {
+                        try
+                        {
+                            if (!TryReadOutputImage(unit, out var data, out var mask))
+                            {
+                                imageError = $"empty output image for unit '{unit.Name}'";
+                                continue;
+                            }
+
+                            images++;
+                            foreach (var signal in _outputs.Values)
+                            {
+                                if (!string.Equals(signal.UnitName, unit.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                                signal.ApplyOutputImage(data, mask);
+                            }
+                        }
+                        catch (Exception imageEx)
+                        {
+                            imageError = imageEx.InnerException?.Message ?? imageEx.Message;
+                        }
+                    }
+
+                    imagesPerSecond += images;
+
+                    var readMs = stopwatch.Elapsed.TotalMilliseconds;
+                    if (++logCounter >= 1000 / Math.Max(_cycleTime, 1))
+                    {
+                        logCounter = 0;
+                        var error = imageError is null ? "" : $", last image error: {imageError}";
+                        Logger.LogInfo(this, $"Read cycle {readMs:0.0} ms, setting {_cycleTime} ms, {imagesPerSecond} output images/s{error}", true);
+                        imagesPerSecond = 0;
+                        imageError = null;
                     }
                 }
                 catch (Exception e)
@@ -368,6 +430,7 @@ public class RobotStudio : PluginBase
                 var mappedInputs = MapSignals(_abbController, IOFilterTypes.Input, _inputs);
                 var mappedOutputs = MapSignals(_abbController, IOFilterTypes.Output, _outputs);
                 Logger.LogInfo(this, $"Mapped {mappedInputs} inputs and {mappedOutputs} outputs");
+                LoadOutputUnits();
                     
             }
             catch (Exception e)
@@ -391,6 +454,8 @@ public class RobotStudio : PluginBase
     /// </summary>
     private void Disconnect()
     {
+        _outputUnits.Clear();
+
         if (_abbController is not null && _abbController.Connected)
         {
             _abbController.Logoff();
@@ -418,5 +483,179 @@ public class RobotStudio : PluginBase
         }
             
         return mappedSignals;
+    }
+
+    private void LoadSafetySignals()
+    {
+        _safetyInputs.Clear();
+        _safetyOutputs.Clear();
+        var path = FindSafetyCfg();
+        if (path is null)
+        {
+            Logger.LogInfo(this, "No safety I/O configuration found");
+            return;
+        }
+
+        var text = File.ReadAllText(path).Replace("\\\r\n", " ").Replace("\\\n", " ");
+        foreach (var rawLine in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            var signalType = QuotedValue(line, "-SignalType ");
+            if (signalType is not ("DO" or "GO" or "DI" or "GI")) continue;
+            if (signalType is "DI" or "GI" &&
+                !line.Contains("-Category \"ProfiSafe\"", StringComparison.Ordinal)) continue;
+
+            var name = QuotedValue(line, "-Name ");
+            var device = QuotedValue(line, "-Device ");
+            var deviceMap = QuotedValue(line, "-DeviceMap ");
+            if (name is null || device is null || deviceMap is null) continue;
+
+            var item = new XElement("Item",
+                new XAttribute("Name", name),
+                new XAttribute("SignalType", signalType),
+                new XAttribute("Device", device),
+                new XAttribute("DeviceMap", deviceMap));
+            var signal = new IoSignal(item);
+            if (signalType is "DO" or "GO") _safetyOutputs.Add(signal);
+            else _safetyInputs.Add(signal);
+        }
+
+        Logger.LogInfo(this, $"Found {_safetyOutputs.Count} safety outputs in '{path}'");
+        Logger.LogInfo(this, $"Found {_safetyInputs.Count} safety inputs in '{path}'");
+        Logger.LogInfo(this, "Safety outputs: " + string.Join(", ", _safetyOutputs.Select(signal => signal.IoItem?.Name)), true);
+        Logger.LogInfo(this, "Safety inputs: " + string.Join(", ", _safetyInputs.Select(signal => signal.IoItem?.Name)), true);
+    }
+
+    private static string? QuotedValue(string line, string key)
+    {
+        var keyIndex = line.IndexOf(key, StringComparison.Ordinal);
+        if (keyIndex < 0) return null;
+
+        var start = line.IndexOf('"', keyIndex + key.Length);
+        if (start < 0) return null;
+
+        var end = line.IndexOf('"', start + 1);
+        if (end < 0) return null;
+
+        return line[(start + 1)..end];
+    }
+
+    private string? FindSafetyCfg()
+    {
+        var controllerInfo = _controllers.FirstOrDefault(x =>
+            string.Equals(x.Name, _controllerName, StringComparison.CurrentCultureIgnoreCase));
+        DirectoryInfo?[] directories = [controllerInfo?.BaseDirectory, controllerInfo?.BaseDirectory?.Parent];
+
+        foreach (var directory in directories)
+        {
+            if (directory is null || !directory.Exists) continue;
+            var path = Path.Combine(directory.FullName, "INTERNAL", "OPTIONS", "SC", "sc_eio.cfg");
+            if (File.Exists(path)) return path;
+        }
+
+        return null;
+    }
+
+    private void AddSafetyInputs()
+    {
+        var added = 0;
+        foreach (var signal in _safetyInputs.OrderBy(item => item.Index))
+        {
+            var name = signal.IoItem?.Name;
+            var device = signal.IoItem?.Device;
+            var adsType = signal.Length switch
+            {
+                1 => TcType.Bit,
+                8 => TcType.Byte,
+                16 => TcType.Word,
+                32 => TcType.Dword,
+                _ => TcType.Unknown
+            };
+            if (name is null || device is null || adsType == TcType.Unknown || _inputs.ContainsKey(name)) continue;
+
+            _inputs.Add(name, signal);
+            InputStructure.AddVariable($"{device}_{name}", adsType);
+            added++;
+        }
+
+        if (added > 0) Logger.LogInfo(this, $"Added {added} safety inputs");
+    }
+
+    private void AddSafetyOutputs()
+    {
+        var added = 0;
+        foreach (var signal in _safetyOutputs.OrderBy(item => item.Index))
+        {
+            var name = signal.IoItem?.Name;
+            var device = signal.IoItem?.Device;
+            var adsType = signal.Length switch
+            {
+                1 => TcType.Bit,
+                8 => TcType.Byte,
+                16 => TcType.Word,
+                32 => TcType.Dword,
+                _ => TcType.Unknown
+            };
+            if (name is null || device is null || adsType == TcType.Unknown || _outputs.ContainsKey(name)) continue;
+
+            _outputs.Add(name, signal);
+            OutputStructure.AddVariable($"{device}_{name}", adsType);
+            added++;
+        }
+
+        if (added > 0) Logger.LogInfo(this, $"Added {added} safety outputs");
+    }
+
+    private void LoadOutputUnits()
+    {
+        if (_abbController is null) return;
+
+        var unitNames = _outputs.Values
+            .Select(signal => signal.UnitName)
+            .Where(name => !string.IsNullOrEmpty(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var unitName in unitNames)
+        {
+            try
+            {
+                _outputUnits.Add(_abbController.IOSystem.GetUnit(unitName));
+                Logger.LogInfo(this, $"Reading output image for unit '{unitName}'");
+            }
+            catch (Exception e)
+            {
+                Logger.LogError(this, $"Could not get unit '{unitName}': {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads the current output image of one unit. The PC SDK does not expose this
+    /// on <see cref="Unit"/>, so the read goes through the same adapter the SDK uses internally.
+    /// </summary>
+    private static bool TryReadOutputImage(Unit unit, out byte[] data, out byte[] mask)
+    {
+        data = [];
+        mask = [];
+
+        var internalUnit = UnitInternalProperty.GetValue(unit);
+        if (internalUnit is null) return false;
+
+        var adapter = GetAdapterMethod.Invoke(internalUnit, null);
+        if (adapter is null) return false;
+
+        if (ReadOutputDataMethod.Invoke(adapter, null) is not IList bytes || bytes.Count == 0) return false;
+
+        data = new byte[bytes.Count];
+        mask = new byte[bytes.Count];
+        for (var i = 0; i < bytes.Count; i++)
+        {
+            var item = bytes[i];
+            if (item is null) continue;
+            data[i] = (byte)(OutputDataField.GetValue(item) ?? 0);
+            mask[i] = (byte)(OutputMaskField.GetValue(item) ?? 0);
+        }
+
+        return true;
     }
 }
