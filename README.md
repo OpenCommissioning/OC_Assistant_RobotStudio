@@ -26,4 +26,7 @@ To build the plugin yourself, you need to copy the
 You can find the dll in `C:\Program Files (x86)\ABB\RobotStudio 2025\Bin\` by default.
 
 > [!NOTE]
-> The plugin has been tested with RobotStudio Version `2025.5`
+> The plugin has been tested with:
+> - RobotStudio `2025.5`
+> - ABB PC SDK `2025.5` (`ABB.Robotics.Controllers.PC.dll` from that RobotStudio install)
+> - .NET `10` (`net10.0-windows`)
