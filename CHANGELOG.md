@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [versionize](https://github.com/versionize/versionize) for commit guidelines.
 
+<a name="1.3.0"></a>
+## [1.3.0](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.3.0) (2026-10-19)
+
+### Features
+
+* read and load safety inputs and outputs into GVL ([36aebf1](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/commit/36aebf1be74f2598de1948d791fb653a4a8644ea))
+* read ProfiSafe group outputs from the safety configuration ([bf56723](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/commit/bf56723b2dc4233d2f7052a1b2beb5065768b3a8))
+
+### Bug Fixes
+
+* refresh robot outputs from the unit image each cycle ([7b30157](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/commit/7b30157ad61abeb0bc2a8f5e6c30bb2f8e52e06d))
+
 <a name="1.2.0"></a>
 ## [1.2.0](https://www.github.com/OpenCommissioning/OC_Assistant_RobotStudio/releases/tag/v1.2.0) (2026-08-31)
 
