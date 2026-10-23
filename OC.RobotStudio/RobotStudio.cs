@@ -351,13 +351,16 @@ public class RobotStudio : PluginBase
     }
         
     /// <summary>
-    /// Plugin 16-aligns the first WORD (bit 144). TwinCAT/GVL pack_mode 1
-    /// byte-aligns it (bit 136). Everything from that WORD on is 8 bits late.
+    /// Bit offset in the TwinCAT exchange buffer.
+    /// Process fields from the first GO onward are 8 bits earlier than BufferBit
+    /// (WORD is 16-aligned in the plugin, byte-aligned in the GVL).
+    /// Safety (ImageBitBase &gt; 0) is another 16 bits earlier than that.
     /// </summary>
     private static int ExchangeBit(IoSignal signal, int regionBitOffset)
     {
         var start = regionBitOffset + signal.BufferBit;
         if (signal.BufferBit >= 144) start -= 8;
+        if (signal.ImageBitBase > 0) start -= 16;
         return start;
     }
 
