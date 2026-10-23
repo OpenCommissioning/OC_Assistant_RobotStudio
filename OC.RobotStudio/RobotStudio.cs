@@ -354,13 +354,15 @@ public class RobotStudio : PluginBase
     /// Bit offset in the TwinCAT exchange buffer.
     /// Process fields from the first GO onward are 8 bits earlier than BufferBit
     /// (WORD is 16-aligned in the plugin, byte-aligned in the GVL).
-    /// Safety (ImageBitBase &gt; 0) is another 16 bits earlier than that.
+    /// Safety is 16 bits earlier than BufferBit (plugin process region is 16 bits longer).
+    /// Safety writes (FDO/FGO) also keep the process -8.
     /// </summary>
-    private static int ExchangeBit(IoSignal signal, int regionBitOffset)
+    private static int ExchangeBit(IoSignal signal, int regionBitOffset, bool writeSafetyShift = false)
     {
         var start = regionBitOffset + signal.BufferBit;
-        if (signal.BufferBit >= 144) start -= 8;
-        if (signal.ImageBitBase > 0) start -= 16;
+        var isSafety = signal.ImageBitBase > 0;
+        if (signal.BufferBit >= 144 && (!isSafety || writeSafetyShift)) start -= 8;
+        if (isSafety) start -= 16;
         return start;
     }
 
@@ -377,7 +379,7 @@ public class RobotStudio : PluginBase
         {
             if (!signal.IsValid) continue;
 
-            var start = ExchangeBit(signal, regionBitOffset);
+            var start = ExchangeBit(signal, regionBitOffset, writeSafetyShift: true);
             var bitSize = signal.ContainerBits;
 
             if (bitSize == 1)
