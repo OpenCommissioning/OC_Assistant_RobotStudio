@@ -161,120 +161,276 @@ public class RobotStudio : PluginBase
     private void SetInputStructure()
     {
         _inputs.Clear();
-        DevicesToStruct(InputStructure, _ioDevices, _inputs, true);
-        AddSafetyInputs();
+        var processBits = DevicesToStruct(InputStructure, _ioDevices, _inputs, true, 0);
+        AddSafetyInputs(processBits);
     }
 
     private void SetOutputStructure()
     {
         _outputs.Clear();
         OutputStructure.AddVariable("Axis", TcType.Real, _axisNo);
-        DevicesToStruct(OutputStructure, _ioDevices, _outputs, false);
-        AddSafetyOutputs();
+        var processBits = DevicesToStruct(OutputStructure, _ioDevices, _outputs, false, 0);
+        AddSafetyOutputs(processBits);
         _axisValues = new float[_axisNo];
     }
 
-    private static void DevicesToStruct(
+    private static int DevicesToStruct(
         IIoStructure structure, 
         IEnumerable<IoDevice>? ioDevices, 
         IDictionary<string, IoSignal> ioSignals, 
-        bool isInput)
+        bool isInput,
+        int regionBitOffset)
     {
-        if (ioDevices is null) return;
+        if (ioDevices is null) return 0;
 
+        var offset = regionBitOffset;
         foreach (var ioDevice in ioDevices)
         {
             var signals = isInput ? ioDevice.Inputs : ioDevice.Outputs;
-
-            if (signals is null) return;
-            
-            foreach (var signal in signals)
+            if (signals is not null)
             {
-                var adsName = $"{ioDevice?.DeviceItem?.Name}_{signal.IoItem?.Name}";
-                var adsType = signal.Length switch
-                {
-                    1 => TcType.Bit,
-                    8 => TcType.Byte,
-                    16 => TcType.Word,
-                    32 => TcType.Dword,
-                    _ => TcType.Unknown
-                };
-
-                if (signal.IoItem?.Name is null || adsType == TcType.Unknown) continue;
-                ioSignals.Add(signal.IoItem.Name, signal);
-                structure.AddVariable(adsName, adsType);
+                offset += AddSignalsWithPadding(
+                    structure,
+                    signals.Where(signal => !IsSafetySignal(signal)),
+                    ioSignals,
+                    offset,
+                    isInput ? "di" : "do");
             }
 
-            if (ioDevice?.HasSubModules == true) DevicesToStruct(structure, ioDevice.SubModules, ioSignals, isInput);
+            if (ioDevice.HasSubModules)
+            {
+                offset += DevicesToStruct(structure, ioDevice.SubModules, ioSignals, isInput, offset);
+            }
         }
+
+        return offset - regionBitOffset;
+    }
+
+    /// <summary>
+    /// Adds signals in DeviceMap order and inserts a reserved BIT for every missing address.
+    /// Unaligned groups stay BYTE/WORD; their leftover bit is not padded so the group sits on a byte.
+    /// <paramref name="addressBase"/> is subtracted from each DeviceMap (safety starts at 2048 on the device, 0 on the PLC).
+    /// </summary>
+    private static int AddSignalsWithPadding(
+        IIoStructure structure,
+        IEnumerable<IoSignal> signals,
+        IDictionary<string, IoSignal> ioSignals,
+        int regionBitOffset,
+        string bitPrefix,
+        int addressBase = 0)
+    {
+        var nextAddr = 0;
+        var structBit = 0;
+        string? lastDevice = null;
+
+        foreach (var signal in signals.OrderBy(item => item.Index))
+        {
+            var name = signal.IoItem?.Name;
+            var device = signal.IoItem?.Device;
+            var adsType = AdsTypeOf(signal);
+            if (name is null || device is null || adsType == TcType.Unknown) continue;
+            lastDevice = device;
+
+            var map = signal.Index - addressBase;
+            if (map < 0) continue;
+
+            if (signal.Length == 1)
+            {
+                while (nextAddr < map)
+                {
+                    AddReservedBit(structure, device, bitPrefix, nextAddr, ref structBit);
+                    nextAddr++;
+                }
+
+                if (ioSignals.ContainsKey(name))
+                {
+                    nextAddr = map + 1;
+                    continue;
+                }
+
+                ioSignals.Add(name, signal);
+                structure.AddVariable($"{device}_{name}", TcType.Bit);
+                signal.ImageBitBase = addressBase;
+                signal.BufferBit = regionBitOffset + structBit;
+                structBit++;
+                nextAddr = map + 1;
+                continue;
+            }
+
+            var alignedAddr = map / 8 * 8;
+            var padUntil = map % 8 == 0 ? map : alignedAddr;
+            while (nextAddr < padUntil)
+            {
+                AddReservedBit(structure, device, bitPrefix, nextAddr, ref structBit);
+                nextAddr++;
+            }
+
+            if (ioSignals.ContainsKey(name))
+            {
+                nextAddr = map + signal.Length;
+                continue;
+            }
+
+            var containerBits = ContainerBitSize(adsType);
+            structBit = AlignBit(structBit, containerBits);
+            ioSignals.Add(name, signal);
+            structure.AddVariable($"{device}_{name}", adsType);
+            signal.ImageBitBase = addressBase;
+            signal.BufferBit = regionBitOffset + structBit;
+            structBit += containerBits;
+            nextAddr = map + signal.Length;
+        }
+
+        if (lastDevice is not null)
+        {
+            while (structBit % 8 != 0)
+            {
+                AddReservedBit(structure, lastDevice, bitPrefix, nextAddr, ref structBit);
+                nextAddr++;
+            }
+        }
+
+        return structBit;
+    }
+
+    private static void AddReservedBit(
+        IIoStructure structure,
+        string device,
+        string bitPrefix,
+        int address,
+        ref int structBit)
+    {
+        structure.AddVariable($"{device}_{bitPrefix}_{address:D4}_Reserved", TcType.Bit);
+        structBit++;
+    }
+
+    private static TcType AdsTypeOf(IoSignal signal)
+    {
+        return signal.Length switch
+        {
+            1 => TcType.Bit,
+            >= 2 and <= 8 => TcType.Byte,
+            >= 9 and <= 16 => TcType.Word,
+            >= 17 and <= 32 => TcType.Dword,
+            _ => TcType.Unknown
+        };
+    }
+
+    private static int ContainerBitSize(TcType adsType)
+    {
+        return adsType switch
+        {
+            TcType.Bit => 1,
+            TcType.Byte => 8,
+            TcType.Word => 16,
+            TcType.Dword => 32,
+            _ => 0
+        };
+    }
+
+    private static int AlignBit(int bit, int alignment)
+    {
+        if (alignment <= 1) return bit;
+        return (bit + alignment - 1) / alignment * alignment;
+    }
+
+    private static bool IsSafetySignal(IoSignal signal)
+    {
+        if (string.Equals(signal.IoItem?.Category, "ProfiSafe", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var name = signal.IoItem?.Name;
+        if (name is null) return false;
+
+        return name.StartsWith("fdi_", StringComparison.OrdinalIgnoreCase)
+               || name.StartsWith("fdo_", StringComparison.OrdinalIgnoreCase)
+               || name.StartsWith("fgi_", StringComparison.OrdinalIgnoreCase)
+               || name.StartsWith("fgo_", StringComparison.OrdinalIgnoreCase);
     }
         
     /// <summary>
-    /// Write signal values to a buffer
+    /// Plugin 16-aligns the first WORD (bit 144). TwinCAT/GVL pack_mode 1
+    /// byte-aligns it (bit 136). Everything from that WORD on is 8 bits late.
+    /// </summary>
+    private static int ExchangeBit(IoSignal signal, int regionBitOffset)
+    {
+        var start = regionBitOffset + signal.BufferBit;
+        if (signal.BufferBit >= 144) start -= 8;
+        return start;
+    }
+
+    /// <summary>
+    /// Write signal values to the TwinCAT buffer. Digital bits stay 1:1.
+    /// Groups write the integer into the BYTE/WORD/DWORD (2 stays 2).
     /// </summary>
     private static void WriteToBuffer(IEnumerable<IoSignal> signals, byte[] buffer, int offset)
     {
-        var bitOffset = offset * 8;
+        var regionBitOffset = offset * 8;
         var bitBuffer = new BitArray(buffer);
             
         foreach (var signal in signals)
         {
-            var bitSize = signal.Length;
+            if (!signal.IsValid) continue;
 
-            if (!signal.IsValid)
-            {
-                bitOffset += bitSize;
-                continue;
-            }
-                
-            //is bool
+            var start = ExchangeBit(signal, regionBitOffset);
+            var bitSize = signal.ContainerBits;
+
             if (bitSize == 1)
             {
-                bitBuffer[bitOffset] = signal.ValueAsBool;
-                bitOffset += bitSize;
+                if ((uint)start < (uint)bitBuffer.Length) bitBuffer[start] = signal.ValueAsBool;
                 continue;
             }
 
-            //is Group- or AnalogValue (8, 16, 32 Bit)
-            var mod = bitOffset % 8;
-            if (mod != 0) bitOffset += 8 - mod;
             var bits = signal.ValueAsUInt32Bits;
-            for (var i = 0; i < bitSize; i++) bitBuffer[bitOffset + i] = ((bits >> i) & 1) != 0;
-            bitOffset += bitSize;
+            for (var i = 0; i < bitSize; i++)
+            {
+                var bit = start + i;
+                if ((uint)bit >= (uint)bitBuffer.Length) break;
+                bitBuffer[bit] = ((bits >> i) & 1) != 0;
+            }
         }
             
         bitBuffer.CopyTo(buffer, 0);
     }
 
     /// <summary>
-    /// Read signal values from a buffer
+    /// Read signal values from the TwinCAT buffer. Digital bits stay 1:1.
+    /// Groups read the integer from the BYTE/WORD/DWORD (2 stays 2).
     /// </summary>
     private static void ReadFromBuffer(IEnumerable<IoSignal> signals, byte[] buffer, int offset)
     {
-        var bitOffset = offset * 8;
+        var regionBitOffset = offset * 8;
         var bitBuffer = new BitArray(buffer);
             
-        foreach (var signal in signals.Where(signal => signal.IsValid))
+        foreach (var signal in signals)
         {
-            var bitSize = signal.Length;
-            
-            //is bool
+            if (!signal.IsValid) continue;
+
+            var start = ExchangeBit(signal, regionBitOffset);
+            var bitSize = signal.ContainerBits;
+
             if (bitSize == 1)
             {
-                bitOffset++;
-                signal.Value = bitBuffer[bitOffset - 1] ? 1.0f : 0.0f;
+                signal.Value = (uint)start < (uint)bitBuffer.Length && bitBuffer[start] ? 1.0f : 0.0f;
                 continue;
             }
 
-            //is Group- or AnalogValue (8, 16, 32 Bit)
-            var mod = bitOffset % 8;
-            if (mod != 0) bitOffset += 8 - mod;
-            var bits = new BitArray(bitSize);
-            for (var i = 0; i < bitSize; i++) bits[i] = bitBuffer[bitOffset + i];
-            var bytes = new byte[4];
-            bits.CopyTo(bytes, 0);
-            bitOffset += bitSize;
-            signal.Value = BitConverter.ToUInt32(bytes, 0);
+            uint value = 0;
+            for (var i = 0; i < bitSize && i < 32; i++)
+            {
+                var bit = start + i;
+                if ((uint)bit >= (uint)bitBuffer.Length) break;
+                if (bitBuffer[bit]) value |= 1u << i;
+            }
+
+            if (signal.Length is > 1 and < 32)
+            {
+                value &= (1u << signal.Length) - 1;
+            }
+
+            signal.Value = value;
         }
     }
         
@@ -556,54 +712,27 @@ public class RobotStudio : PluginBase
         return null;
     }
 
-    private void AddSafetyInputs()
+    private void AddSafetyInputs(int regionBitOffset)
     {
-        var added = 0;
-        foreach (var signal in _safetyInputs.OrderBy(item => item.Index))
-        {
-            var name = signal.IoItem?.Name;
-            var device = signal.IoItem?.Device;
-            var adsType = signal.Length switch
-            {
-                1 => TcType.Bit,
-                8 => TcType.Byte,
-                16 => TcType.Word,
-                32 => TcType.Dword,
-                _ => TcType.Unknown
-            };
-            if (name is null || device is null || adsType == TcType.Unknown || _inputs.ContainsKey(name)) continue;
-
-            _inputs.Add(name, signal);
-            InputStructure.AddVariable($"{device}_{name}", adsType);
-            added++;
-        }
-
-        if (added > 0) Logger.LogInfo(this, $"Added {added} safety inputs");
+        var addedBefore = _inputs.Count;
+        var addressBase = SafetyAddressBase(_safetyInputs);
+        var bits = AddSignalsWithPadding(InputStructure, _safetyInputs, _inputs, regionBitOffset, "fdi", addressBase);
+        var added = _inputs.Count - addedBefore;
+        if (added > 0) Logger.LogInfo(this, $"Added {added} safety inputs ({bits} bits, base {addressBase})");
     }
 
-    private void AddSafetyOutputs()
+    private void AddSafetyOutputs(int regionBitOffset)
     {
-        var added = 0;
-        foreach (var signal in _safetyOutputs.OrderBy(item => item.Index))
-        {
-            var name = signal.IoItem?.Name;
-            var device = signal.IoItem?.Device;
-            var adsType = signal.Length switch
-            {
-                1 => TcType.Bit,
-                8 => TcType.Byte,
-                16 => TcType.Word,
-                32 => TcType.Dword,
-                _ => TcType.Unknown
-            };
-            if (name is null || device is null || adsType == TcType.Unknown || _outputs.ContainsKey(name)) continue;
+        var addedBefore = _outputs.Count;
+        var addressBase = SafetyAddressBase(_safetyOutputs);
+        var bits = AddSignalsWithPadding(OutputStructure, _safetyOutputs, _outputs, regionBitOffset, "fdo", addressBase);
+        var added = _outputs.Count - addedBefore;
+        if (added > 0) Logger.LogInfo(this, $"Added {added} safety outputs ({bits} bits, base {addressBase})");
+    }
 
-            _outputs.Add(name, signal);
-            OutputStructure.AddVariable($"{device}_{name}", adsType);
-            added++;
-        }
-
-        if (added > 0) Logger.LogInfo(this, $"Added {added} safety outputs");
+    private static int SafetyAddressBase(IEnumerable<IoSignal> signals)
+    {
+        return signals.Select(signal => signal.Index).DefaultIfEmpty(0).Min();
     }
 
     private void LoadOutputUnits()

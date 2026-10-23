@@ -16,6 +16,18 @@ internal partial class IoSignal
     public IoItem? IoItem { get; }
     public int Index => _index;
     public int Length { get; }
+
+    /// <summary>
+    /// Bit offset of this signal in the TwinCAT exchange buffer, including reserved padding.
+    /// Process I/O is 0-based. Safety I/O is offset to the start of that region.
+    /// </summary>
+    public int BufferBit { get; set; }
+
+    /// <summary>
+    /// DeviceMap origin of this signal's unit image. 0 for process I/O, 2048 for safety.
+    /// </summary>
+    public int ImageBitBase { get; set; }
+
     public string? UnitName { get; private set; }
 
     public bool IsValid => _signal is not null;
@@ -51,8 +63,6 @@ internal partial class IoSignal
                 if (low < index) index = low;
             }
 
-            var mod = length % 8;
-            if (mod != 0) length += 8 - mod;
             Length = length;
             _index = index;
         }
@@ -88,33 +98,56 @@ internal partial class IoSignal
     }
 
     /// <summary>
+    /// Bit width of the TwinCAT BYTE/WORD/DWORD that holds this signal.
+    /// </summary>
+    public int ContainerBits => Length switch
+    {
+        <= 1 => 1,
+        <= 8 => 8,
+        <= 16 => 16,
+        _ => 32
+    };
+
+    /// <summary>
     /// Applies one unit output image. Does not write back to the robot.
-    /// Bits whose mask is clear are left unchanged.
+    /// Process DOs stay on the device image. Groups and safety bits use the
+    /// controller value so every GO/FGO/GI/FGI/FDO matches the pendant name.
     /// </summary>
     public void ApplyOutputImage(byte[] data, byte[] mask)
     {
         if (Length <= 0) return;
 
-        var value = (uint)Math.Round(Math.Max(_value, 0f));
-        var applied = false;
-
-        for (var i = 0; i < Length && i < 32; i++)
+        if (Length > 1 || ImageBitBase > 0)
         {
-            var map = Index + i;
-            var byteIndex = map / 8;
-            var bitIndex = map % 8;
-            if ((uint)byteIndex >= (uint)data.Length || (uint)byteIndex >= (uint)mask.Length) return;
-
-            var maskByte = mask[byteIndex];
-            if (((maskByte >> bitIndex) & 1) == 0) continue;
-
-            applied = true;
-            var dataBit = ((data[byteIndex] >> bitIndex) & 1) != 0;
-            if (dataBit) value |= 1u << i;
-            else value &= ~(1u << i);
+            RefreshControllerValue();
+            return;
         }
 
-        if (applied) _value = value;
+        var map = Index;
+        var imageBits = data.Length * 8;
+        if (map < 0 || map >= imageBits) return;
+
+        var byteIndex = map / 8;
+        var bitIndex = map % 8;
+        if ((uint)byteIndex >= (uint)mask.Length) return;
+        if (((mask[byteIndex] >> bitIndex) & 1) == 0) return;
+        _value = ((data[byteIndex] >> bitIndex) & 1) != 0 ? 1f : 0f;
+    }
+
+    /// <summary>
+    /// Pendant value for groups and safety bits. No byte-swap — layout is fixed in the buffer write.
+    /// </summary>
+    public void RefreshControllerValue()
+    {
+        if (_signal is null) return;
+        try
+        {
+            _value = _signal.Value;
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(this, e.Message);
+        }
     }
 
     public void Map(Signal signal)
